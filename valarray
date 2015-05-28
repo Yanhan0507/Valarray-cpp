@@ -1,0 +1,404 @@
+#ifndef _vec_wrap_h
+#define _vec_wrap_h
+
+#include "Vector.h"
+
+#include "iostream"
+using epl::vector; // during development and testing
+
+// key words: 4 operators; using function objects to handle(+-*/); one binaryproxy
+// In my implementation, vec_wrap is inheriented from vector or proxy. I used function object(std::plus, std::minus...) to
+// deal with operator+-*/.  Also, I applied one binaryproxy to deal with all binary operations.
+// Finally, I use a new struct called Enable to process three different cases(V+V, S+V, V+S).
+// Therefore, there are overall 4 operators, rather than 12 operators.
+
+template <typename T, typename R> class vec_wrap;
+template <typename T, typename R = vector<T> >
+using valarray = vec_wrap<T, R>;
+
+template<typename T>
+struct level_rank{
+    static constexpr int pro_level = 0;
+    static constexpr bool isComplex = false;
+};  // determine the priority of the type
+
+template <int>
+struct rank;        // determine the type
+
+template <typename T, bool complexity>
+struct is_Complex;
+
+template<typename T1, typename T2>
+struct chooser {
+    static const uint64_t t1 = level_rank<T1>::pro_level;
+    static const uint64_t t2 = level_rank<T2>::pro_level;
+    static const uint64_t my_priority = t1 > t2 ? t1:t2;
+    static const uint64_t judge = ((t1<=3 && t1>=1) && (t2<=3 && t2>=1)) ? 1:0;
+    using priority = typename rank<my_priority>::type;
+    static const bool complexity = level_rank<T1>::isComplex || level_rank<T2>::isComplex;
+    using type = typename is_Complex<priority, complexity>::type;
+};
+
+template<typename T>
+struct scalar {
+    T num;
+    scalar(T _v) : num(_v) {}
+    T operator[](uint64_t index) const {   // we also need this two methods, but just return constant
+        return num;
+    }
+    uint64_t size() const {
+        return 0;
+    }
+};
+
+template <typename Des, typename Cur, bool t1, bool t2>
+struct promotion;
+
+template<typename Des, typename Cur>
+struct promotion<Des, Cur, true, true> {
+    Cur val;
+    promotion(Cur _v) { val = _v; }
+    Des getValue() {
+        using tmp = typename rank<level_rank<Des>::pro_level>::type;
+        return Des{static_cast<tmp>(val.real()), static_cast<tmp>(val.imag())};
+    }
+};
+
+template<typename Des, typename Cur>
+struct promotion<Des, Cur, true, false> {
+    Cur val;
+    promotion(Cur _v) { val = _v; }
+    Des getValue() {
+        using tmp = typename rank<level_rank<Des>::pro_level>::type;
+        return Des{static_cast<tmp>(val)};
+    }
+};
+
+template<typename Des, typename Cur>
+struct promotion<Des, Cur, false, false> {
+    Cur val;
+    promotion(Cur _v) { val = _v; }
+    Des getValue() {
+        return static_cast<Des>(val);
+    }
+};
+
+template<typename O, typename T>
+class Iterator {
+public:
+    O* pro;
+    uint64_t index;
+    Iterator(O* o, int i) : pro(o), index(i) {}
+    T operator*() {
+        return pro->operator[](index);
+    }
+    Iterator& operator++() {
+        ++index;
+        return *this;
+    }
+    Iterator operator++(int) {
+        Iterator<O, T> tmp{*this};
+        ++index;
+        return tmp;
+    }
+    bool operator == (const Iterator& rhs) const {
+        return this->index == rhs.index ? true : false;
+    }
+    bool operator != (const Iterator& rhs) const {
+        return this->index != rhs.index ? true : false;
+    }
+    bool operator == (Iterator& rhs){
+        return this->index == rhs.index ? true : false;
+    }
+    bool operator != (Iterator& rhs) {
+        return this->index != rhs.index ? true : false;
+    }
+};
+
+template <typename L, typename R, typename Oper>
+struct UnaryProcessor {
+    using ReturnType = typename Oper::result_type;
+    
+    const vec_wrap<L, R>& val;
+    Oper oper;
+    UnaryProcessor(const vec_wrap<L, R>& _val, Oper _op) : val(_val), oper(_op) {}
+    ReturnType operator[](uint64_t index) const {
+        return oper(this->val[index]);
+    }
+    uint64_t size() const { return (uint64_t)val.size(); }
+    Iterator<UnaryProcessor, L>  begin() {
+        return Iterator<UnaryProcessor, L>(this, 0);
+    }
+    Iterator<UnaryProcessor, const L> begin() const {
+        return Iterator<UnaryProcessor, const L>(this, 0);
+    }
+    Iterator<UnaryProcessor, L> end() {
+        return Iterator<UnaryProcessor, L>(this, this->size());
+    }
+    Iterator<UnaryProcessor, const L> end() const {
+        return Iterator<UnaryProcessor, const L>(this, this->size());
+    }
+};
+
+template <typename TwoOper, typename lReturn, typename L, typename rReturn, typename R>
+struct binaryprox {
+    using ReturnType = typename chooser<lReturn, rReturn>::type;
+    
+    const vec_wrap<lReturn, L>& left;
+    const vec_wrap<rReturn, R>& right;
+    TwoOper op;
+    
+    binaryprox(TwoOper _op, const vec_wrap<lReturn, L>& _l, const vec_wrap<rReturn, R>& _r) : op(_op), left(_l), right(_r) {}
+    
+    ReturnType operator[](uint64_t index) const {
+        
+        auto lValue = promotion<ReturnType, lReturn, level_rank<ReturnType>::isComplex, level_rank<lReturn>::isComplex>(this->left[index]);
+        auto rValue = promotion<ReturnType, rReturn, level_rank<ReturnType>::isComplex, level_rank<rReturn>::isComplex>(this->right[index]);
+        return this->op(lValue.getValue(), rValue.getValue());
+    }
+    uint64_t size() const {
+        return std::min((uint64_t)left.size(), (uint64_t)right.size());
+    }
+};
+
+
+template <typename TwoOper, typename lReturn, typename L, typename rReturn>
+struct binaryprox<TwoOper, lReturn, L, rReturn, scalar<rReturn>> {
+    using ReturnType = typename chooser<lReturn, rReturn>::type;
+    
+    const vec_wrap<lReturn, L>& left;
+    scalar<rReturn> right;
+    TwoOper op;
+    bool sequence;
+    binaryprox(TwoOper _op, const vec_wrap<lReturn, L>& _l, scalar<rReturn> _r, bool _b) : op(_op), left(_l), right(_r), sequence(_b) {}
+    ReturnType operator[](uint64_t index) const {
+        auto lValue = promotion<ReturnType, lReturn, level_rank<ReturnType>::isComplex, level_rank<lReturn>::isComplex>(this->left[index]);
+        auto rValue = promotion<ReturnType, rReturn, level_rank<ReturnType>::isComplex, level_rank<rReturn>::isComplex>(this->right[index]);
+        
+        if (sequence) {
+            ReturnType i = this->op(lValue.getValue(), rValue.getValue());
+            return i;
+        } else {
+            return this->op(rValue.getValue(), lValue.getValue());
+        }
+    }
+    uint64_t size() const {
+        return (uint64_t)left.size();
+    }
+};
+
+
+template <typename Operation, typename lReturn, typename L, typename rReturn=lReturn, typename R=scalar<rReturn>, typename P=binaryprox<Operation, lReturn, L, rReturn, R>>
+struct wrapper : public P {
+    using ReturnType = typename chooser<lReturn, rReturn>::type;
+    
+    wrapper(Operation _op, const vec_wrap<lReturn, L>& _l, const vec_wrap<rReturn, R>& _r) : P(_op, _l, _r) {}
+    wrapper(Operation _op, const vec_wrap<lReturn, L>& _l, scalar<rReturn> _r, bool sequence) : P(_op, _l, _r, sequence) {}
+    
+    Iterator<wrapper, ReturnType> begin() {
+        return Iterator<wrapper, ReturnType>(this, 0);
+    }
+    Iterator<wrapper, const ReturnType> begin() const {
+        return Iterator<wrapper, const ReturnType>(this, 0);
+    }
+    Iterator<wrapper, ReturnType> end() {
+        return Iterator<wrapper, ReturnType>(this, this->size());
+    }
+    Iterator<wrapper, const ReturnType> end() const {
+        return Iterator<wrapper, const ReturnType>(this, this->size());
+    }
+};
+
+
+template <typename T1, typename T2>
+struct square_helper : public std::unary_function<T1, T2>  {
+    T2 operator() (const T1& tmp) const {
+        return std::sqrt(tmp);
+    }
+};
+
+template <typename T, typename P=vector<T> >
+struct vec_wrap : public P {
+public:
+    vec_wrap() : P() {}
+    
+    explicit vec_wrap(uint64_t size) : P(size) {}
+    
+    vec_wrap(std::initializer_list<T> list) : P(list) {}
+    
+    template <typename BinaryOp, typename T1, typename R1, typename T2, typename R2>
+    vec_wrap(BinaryOp op, const vec_wrap<T1, R1>& x, const vec_wrap<T2, R2>& y) : P(op, x, y) {}
+    
+    template <typename BinaryOp, typename T1, typename R1, typename T2>
+    vec_wrap(BinaryOp op, const vec_wrap<T1, R1>& x, scalar<T2> y, bool seq=true) : P(op, x, y, seq) {}
+    
+    template <typename L, typename R, typename operation>
+    vec_wrap(const vec_wrap<L, R>& rhs, operation op) : P(rhs, op) {}
+    
+    template <typename L, typename R>
+    vec_wrap(const vec_wrap<L, R>& rhs) {
+        for (int i=0; i < rhs.size(); ++i) {
+            this->push_back((T)rhs[i]);
+        }
+    }
+    vec_wrap<T, P>& operator=(const vec_wrap<T, P>& that) {
+        
+        if (this != &that) {
+            int size1 = this->size();
+            int size2 = that.size();
+            if(size1 >= size2){
+                for(int i=0; i<size2; i++){
+                    (*this)[i] = that[i];
+                }
+                for(int i=0; i<size1-size2; i++){
+                    this->pop_back();
+                }
+            }
+            else{
+                for(int i=0; i<size1; i++){
+                    (*this)[i] = that[i];
+                }
+            }
+            return *this;
+        }
+        return *this;
+    }
+    template <typename L, typename R>
+    vec_wrap<T, P>& operator=(const vec_wrap<L, R>& that) {
+        
+        int size1 = this->size();
+        int size2 = that.size();
+        if(size1 >= size2){
+            for(int i=0; i<size2; i++){
+                (*this)[i] = that[i];
+            }
+            for(int i=0; i<size1-size2; i++){
+                this->pop_back();
+            }
+        }
+        else{
+            for(int i=0; i<size1; i++){
+                (*this)[i] = that[i];
+            }
+        }
+        return *this;
+    }
+    vec_wrap<T, P>& operator=(const T& val) {
+        for (int i=0; i < this->size(); ++i) {
+            this->operator[](i) = val;
+        }
+    }
+    template<typename operation>
+    vec_wrap<typename operation::result_type, UnaryProcessor<T, P, operation>>
+    apply(operation op) const {
+        return vec_wrap<typename operation::result_type, UnaryProcessor<T, P, operation>>(*this, op);
+    }
+    
+    template<class TwoOper>
+    T accumulate(TwoOper op) {
+        T tmp = (*this)[0];
+        for (int i=1; i < this->size();  ++i) {
+            tmp = op(tmp, (*this)[i]);
+        }
+        return tmp;
+    }
+    T sum() {
+        return accumulate(std::plus<T>());
+    }
+    
+    template <typename T1=typename chooser<T, typename is_Complex<double, level_rank<T>::isComplex>::type >::type>
+    vec_wrap<T1, UnaryProcessor<T, P, square_helper<T, T1>>>
+    sqrt() {
+        return apply(square_helper<T, T1>());
+    }
+};
+
+template<typename T, typename R>
+std::ostream& operator<<(std::ostream& out, const vec_wrap<T, R>& val) {
+    const char* pre = "";
+    for (int i=0; i < val.size(); ++i) {
+        out << pre << val.operator[](i);
+        pre = ", ";
+    }
+    out << std::endl;
+    return out;
+}
+
+template <typename T, typename R>
+vec_wrap<T, UnaryProcessor<T, R, std::negate<T>> >
+operator-(const vec_wrap<T, R>& x) {
+    return x.apply(std::negate<T>());
+}
+
+template <template<typename> class OP>
+struct Enable{
+    template <typename T1,typename R1 ,typename T2 ,typename R2,typename RetType=typename chooser<T1, T2>::type>
+    static typename std::enable_if<chooser<T1,T2>::judge, vec_wrap<RetType,wrapper<OP<RetType>,T1,R1,T2,R2>>>::type reTurn(const vec_wrap<T1, R1>& x, const vec_wrap<T2, R2>& y){
+        return vec_wrap<RetType, wrapper<OP<RetType>, T1, R1, T2, R2>>(OP<RetType>(), x, y);
+    }
+    
+    template <typename T1, typename R1, typename T2, typename RetType=typename chooser<T1, T2>::type>
+    static typename std::enable_if< chooser<T1,T2>::judge ,vec_wrap<RetType, wrapper<OP<RetType>, T1, R1, T2> >>::type reTurn(const vec_wrap<T1, R1>& x, T2 y){
+        return vec_wrap<RetType, wrapper<OP<RetType>, T1, R1, T2>>(OP<RetType>(), x, scalar<T2>(y), true);
+    }
+    
+    template <typename T1, typename T2, typename R2, typename RetType=typename chooser<T1, T2>::type>
+    static typename std::enable_if<chooser<T1,T2>::judge, vec_wrap<RetType, wrapper<OP<RetType>, T2, R2, T1> >>::type reTurn(T1 y, const vec_wrap<T2, R2>& x){
+        return vec_wrap<RetType, wrapper<OP<RetType>, T2, R2, T1>>(OP<RetType>(), x, scalar<T1>(y), false);
+    }
+    
+};
+
+template <typename T1 ,typename T2>
+auto operator *(const T1& x , const T2& y)->decltype(Enable<std::multiplies>::reTurn(x,y)){
+    return Enable<std::multiplies>::reTurn(x,y);
+}
+
+template <typename T1 ,typename T2>
+auto operator /(const T1& x , const T2& y)->decltype(Enable<std::divides>::reTurn(x,y)){
+    return Enable<std::divides>::reTurn(x,y);
+}
+
+template <typename T1 ,typename T2>
+auto operator +(const T1& x , const T2& y)->decltype(Enable<std::plus>::reTurn(x,y)){
+    return Enable<std::plus>::reTurn(x,y);
+}
+
+template <typename T1 ,typename T2>
+auto operator -(const T1& x , const T2& y)->decltype(Enable<std::minus>::reTurn(x,y)){
+    return Enable<std::minus>::reTurn(x,y);
+}
+
+template<> struct level_rank<int> {
+    static constexpr int pro_level = 1;
+    static constexpr bool isComplex = false;
+};
+
+template<> struct level_rank<float> {
+    static constexpr int pro_level = 2;
+    static constexpr bool isComplex = false;
+};
+
+template<> struct level_rank<double> {
+    static constexpr int pro_level = 3;
+    static constexpr bool isComplex = false;};
+
+template <typename T> struct level_rank<std::complex<T>> {
+    static constexpr int pro_level = level_rank<T>::pro_level;
+    static constexpr bool isComplex = true;};
+
+template <typename T, typename R> struct level_rank<vec_wrap<T, R>>{
+    static constexpr int pro_level = level_rank<T>::pro_level;
+    static constexpr bool isComplex = level_rank<T>::isComplex;};
+
+template <> struct rank<1> { using type = int;  };
+template <> struct rank<2> { using type = float; };
+template <> struct rank<3> { using type = double; };
+
+template <typename T> struct is_Complex<T, true> {
+    using type = std::complex<T>;};
+
+template <typename T> struct is_Complex<T, false> {
+    using type = T;};
+
+#endif /* _vec_wrap_h */
